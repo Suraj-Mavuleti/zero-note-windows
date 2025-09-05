@@ -1,0 +1,5 @@
+[package]
+name = "zero-note-windows"
+version = "1.0.0"
+edition = "2021"
+description = "Native Windows client for zero-note"

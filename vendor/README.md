@@ -1,0 +1,2 @@
+# Vendor Directory
+This directory contains statically linked dependencies (SQLite, ImGui, stb) used by the native rendering engine to guarantee zero-latency execution without external shared library overhead.
