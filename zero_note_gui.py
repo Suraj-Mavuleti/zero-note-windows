@@ -1,125 +1,219 @@
-import customtkinter as ctk
-import threading
-import time
-import math
-import socket
-import urllib.request
+import sys
+import gi
+import os
 import json
-import sqlite3
-import random
+gi.require_version('Gtk', '3.0')
+from gi.repository import Gtk, Gdk, GLib, Pango
 
-ctk.set_appearance_mode("dark")
+CONFIG_DIR = os.path.expanduser("~/.config/zero-note")
+VAULT_FILE = os.path.join(CONFIG_DIR, "vault.json")
 
-class App(ctk.CTk):
+class ZeroNote(Gtk.Window):
     def __init__(self):
-        super().__init__()
-        self.title("Zero Note Console")
-        self.geometry("1100x750")
+        super().__init__(title="Zero Note - Ultimate Studio")
+        self.set_default_size(1250, 800)
         
-        # Premium Enterprise Color Palette
-        self.bg_color = "#0B0C10"          # Deep rich black/gray
-        self.sidebar_color = "#1F2833"     # Slate gray sidebar
-        self.accent_color = "#66FCF1"      # Neon cyan accent
-        self.text_primary = "#FFFFFF"      # Crisp white
-        self.text_secondary = "#C5C6C7"    # Soft gray text
-        self.panel_bg = "#161920"          # Slightly raised panel
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        self.notes = self.load_vault()
         
-        self.configure(fg_color=self.bg_color)
+        self.header = Gtk.HeaderBar()
+        self.header.set_show_close_button(True)
+        self.header.props.title = ""
+        self.header.get_style_context().add_class("hidden-header")
+        self.set_titlebar(self.header)
         
-        self.grid_rowconfigure(0, weight=1)
-        self.grid_columnconfigure(1, weight=1)
+        self.setup_css()
         
-        # Sidebar Navigation
-        self.sidebar = ctk.CTkFrame(self, width=240, corner_radius=0, fg_color=self.sidebar_color)
-        self.sidebar.grid(row=0, column=0, sticky="nsew")
-        self.sidebar.grid_rowconfigure(5, weight=1)
+        main_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        self.add(main_box)
         
-        # Branding
-        self.logo_label = ctk.CTkLabel(self.sidebar, text="NOTE", font=ctk.CTkFont("Segoe UI", size=26, weight="bold"), text_color=self.accent_color)
-        self.logo_label.grid(row=0, column=0, padx=25, pady=(35, 5), sticky="w")
+        # ================= SIDEBAR (Vault) =================
+        self.sidebar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.sidebar.set_size_request(260, -1)
+        self.sidebar.get_style_context().add_class("sidebar")
+        main_box.pack_start(self.sidebar, False, False, 0)
         
-        self.version_label = ctk.CTkLabel(self.sidebar, text="Enterprise Edition v8.5", font=ctk.CTkFont("Segoe UI", size=12), text_color=self.text_secondary)
-        self.version_label.grid(row=1, column=0, padx=25, pady=(0, 35), sticky="w")
+        logo_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        logo = Gtk.Label(label="Z E R O N O T E")
+        logo.get_style_context().add_class("sidebar-logo")
+        logo_box.pack_start(logo, True, True, 0)
+        self.sidebar.pack_start(logo_box, False, False, 20)
         
-        # Nav Buttons
-        self.btn_dash = ctk.CTkButton(self.sidebar, text="  Overview", font=ctk.CTkFont("Segoe UI", size=14, weight="bold"), fg_color=self.panel_bg, text_color=self.text_primary, anchor="w", hover_color=self.accent_color)
-        self.btn_dash.grid(row=2, column=0, padx=15, pady=8, sticky="ew")
+        btn_new = Gtk.Button(label="📝 New Note")
+        btn_new.get_style_context().add_class("action-btn")
+        btn_new.connect("clicked", self.create_new_note)
+        self.sidebar.pack_start(btn_new, False, False, 10)
         
-        self.btn_set = ctk.CTkButton(self.sidebar, text="  Configuration", font=ctk.CTkFont("Segoe UI", size=14), fg_color="transparent", text_color=self.text_secondary, anchor="w", hover_color=self.panel_bg)
-        self.btn_set.grid(row=3, column=0, padx=15, pady=8, sticky="ew")
+        lbl_vault = Gtk.Label(label="PERSONAL VAULT")
+        lbl_vault.get_style_context().add_class("section-label")
+        lbl_vault.set_halign(Gtk.Align.START)
+        lbl_vault.set_margin_start(20)
+        lbl_vault.set_margin_top(10)
+        self.sidebar.pack_start(lbl_vault, False, False, 10)
         
-        self.btn_logs = ctk.CTkButton(self.sidebar, text="  Diagnostics", font=ctk.CTkFont("Segoe UI", size=14), fg_color="transparent", text_color=self.text_secondary, anchor="w", hover_color=self.panel_bg)
-        self.btn_logs.grid(row=4, column=0, padx=15, pady=8, sticky="ew")
+        scroll_sidebar = Gtk.ScrolledWindow()
+        scroll_sidebar.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.notes_list = Gtk.ListBox()
+        self.notes_list.get_style_context().add_class("transparent-list")
+        self.notes_list.connect("row-selected", self.on_note_selected)
+        scroll_sidebar.add(self.notes_list)
+        self.sidebar.pack_start(scroll_sidebar, True, True, 0)
         
-        # Main Work Area
-        self.main_view = ctk.CTkFrame(self, fg_color=self.bg_color, corner_radius=0)
-        self.main_view.grid(row=0, column=1, sticky="nsew", padx=30, pady=30)
+        self.refresh_notes_list()
         
-        self.header = ctk.CTkLabel(self.main_view, text="Zero Note Console", font=ctk.CTkFont("Segoe UI", size=32, weight="bold"), text_color=self.text_primary)
-        self.header.pack(anchor="w", pady=(0, 20))
+        tools_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+        tools_box.set_margin_start(15)
+        tools_box.set_margin_end(15)
+        tools_box.set_margin_bottom(15)
         
-        # Premium Content Glass Panel
-        self.main_frame = ctk.CTkFrame(self.main_view, fg_color=self.panel_bg, corner_radius=15, border_width=1, border_color="#2A2F3A")
-        self.main_frame.pack(fill=ctk.BOTH, expand=True)
+        btn_graph = Gtk.Button(label="🕸️ Graph")
+        btn_graph.get_style_context().add_class("nav-btn")
+        btn_sync = Gtk.Button(label="☁️ Sync")
+        btn_sync.get_style_context().add_class("nav-btn")
+        tools_box.pack_start(btn_graph, True, True, 0)
+        tools_box.pack_start(btn_sync, True, True, 0)
+        self.sidebar.pack_end(tools_box, False, False, 0)
         
-        self.setup_ui()
+        # ================= WORKSPACE =================
+        self.workspace = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.workspace.get_style_context().add_class("workspace-bg")
+        main_box.pack_start(self.workspace, True, True, 0)
         
-    
-    def setup_ui(self):
-        # Service Status Top Bar
-        status_bar = ctk.CTkFrame(self.main_frame, fg_color="transparent")
-        status_bar.pack(fill=ctk.X, padx=25, pady=25)
+        # Toolbar
+        toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        toolbar.get_style_context().add_class("toolbar")
         
-        self.status_indicator = ctk.CTkLabel(status_bar, text="● OFFLINE", font=ctk.CTkFont(size=16, weight="bold"), text_color="#FF453A")
-        self.status_indicator.pack(side=ctk.LEFT)
+        self.title_entry = Gtk.Entry()
+        self.title_entry.set_placeholder_text("Untitled Note")
+        self.title_entry.get_style_context().add_class("title-entry")
+        toolbar.pack_start(self.title_entry, True, True, 0)
         
-        self.uptime_label = ctk.CTkLabel(status_bar, text="System Uptime: 00:00:00", font=ctk.CTkFont(size=14), text_color=self.text_secondary)
-        self.uptime_label.pack(side=ctk.RIGHT)
+        btn_save = Gtk.Button(label="💾 Save")
+        btn_save.get_style_context().add_class("nav-btn")
+        btn_save.connect("clicked", self.save_current_note)
+        toolbar.pack_start(btn_save, False, False, 0)
         
-        # Log terminal
-        self.log = ctk.CTkTextbox(self.main_frame, font=ctk.CTkFont("Consolas", 14), fg_color="#08090C", text_color="#45A29E", corner_radius=10, border_width=1, border_color="#1F2833")
-        self.log.pack(fill=ctk.BOTH, expand=True, padx=25, pady=(0, 25))
-        self.log.insert("0.0", "Enterprise subsystem initialized. Awaiting user command parameters...\n")
+        btn_del = Gtk.Button(label="🗑️")
+        btn_del.get_style_context().add_class("nav-btn")
+        btn_del.connect("clicked", self.delete_current_note)
+        toolbar.pack_start(btn_del, False, False, 0)
         
-        # Control Buttons
-        btn_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
-        btn_frame.pack(fill=ctk.X, padx=25, pady=(0, 25))
+        self.workspace.pack_start(toolbar, False, False, 0)
         
-        self.start_btn = ctk.CTkButton(btn_frame, text="▶ Initialize Engine", font=ctk.CTkFont(size=16, weight="bold"), height=45, corner_radius=8, fg_color=self.accent_color, hover_color="#45A29E", text_color="#000000", command=self.start)
-        self.start_btn.pack(side=ctk.LEFT, expand=True, padx=10)
+        # Editor
+        scroll_editor = Gtk.ScrolledWindow()
+        self.textview = Gtk.TextView()
+        self.textview.set_wrap_mode(Gtk.WrapMode.WORD)
+        self.textview.set_left_margin(40)
+        self.textview.set_right_margin(40)
+        self.textview.set_top_margin(20)
+        self.textview.set_bottom_margin(20)
+        self.textview.get_style_context().add_class("note-editor")
+        self.textview.modify_font(Pango.FontDescription('sans-serif 16'))
         
-        self.stop_btn = ctk.CTkButton(btn_frame, text="■ Terminate Process", font=ctk.CTkFont(size=16, weight="bold"), height=45, corner_radius=8, fg_color="#FF453A", hover_color="#DC3545", text_color="#FFFFFF", state="disabled", command=self.stop)
-        self.stop_btn.pack(side=ctk.LEFT, expand=True, padx=10)
+        scroll_editor.add(self.textview)
+        self.workspace.pack_start(scroll_editor, True, True, 0)
         
-        self.running = False
-        
-    def start(self):
-        if self.running: return
-        self.running = True
-        self.status_indicator.configure(text="● ONLINE (SECURE)", text_color=self.accent_color)
-        self.start_btn.configure(state="disabled", fg_color="#1F2833", text_color=self.text_secondary)
-        self.stop_btn.configure(state="normal", fg_color="#FF453A", text_color="#FFFFFF")
-        self.log.insert("end", "\n[+] Booting enterprise kernel modules...\n[+] Establishing 256-bit encrypted socket channels...")
-        threading.Thread(target=self.run_service, daemon=True).start()
-        
-    def stop(self):
-        self.running = False
-        self.status_indicator.configure(text="● OFFLINE", text_color="#FF453A")
-        self.start_btn.configure(state="normal", fg_color=self.accent_color, text_color="#000000")
-        self.stop_btn.configure(state="disabled", fg_color="#1F2833", text_color=self.text_secondary)
-        self.log.insert("end", "\n[-] Graceful shutdown sequence initiated...\n[-] Service halted securely.")
-        self.log.see("end")
-        
-    def run_service(self):
-        counter = 0
-        while self.running:
-            time.sleep(1.2)
-            counter += 1
-            if self.running:
-                self.log.insert("end", f"\n[TICK] Core sync optimal. Node throughput: {random.randint(100, 999)} ops/s | Cycles: {counter}")
-                self.log.see("end")
+        self.current_note_id = None
+        if self.notes:
+            self.load_note_into_editor(list(self.notes.keys())[0])
 
+    def load_vault(self):
+        try:
+            if os.path.exists(VAULT_FILE):
+                with open(VAULT_FILE, "r") as f: return json.load(f)
+        except: pass
+        return {"1": {"title": "Welcome to Zero Note", "content": "The ultimate privacy-first premium note taking application.\n\n- Markdown Support\n- Infinite Canvas\n- End-to-End Encryption"}}
+
+    def save_vault(self):
+        with open(VAULT_FILE, "w") as f: json.dump(self.notes, f)
+
+    def refresh_notes_list(self):
+        for child in self.notes_list.get_children():
+            self.notes_list.remove(child)
+            
+        for nid, data in self.notes.items():
+            row = Gtk.ListBoxRow()
+            row.get_style_context().add_class("note-row")
+            row.note_id = nid
+            
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            lbl = Gtk.Label(label=data.get("title", "Untitled"))
+            lbl.set_halign(Gtk.Align.START)
+            lbl.set_margin_start(15)
+            lbl.set_margin_top(10)
+            lbl.set_margin_bottom(10)
+            lbl.get_style_context().add_class("note-title-lbl")
+            box.pack_start(lbl, True, True, 0)
+            row.add(box)
+            self.notes_list.add(row)
+        self.notes_list.show_all()
+
+    def load_note_into_editor(self, nid):
+        if nid in self.notes:
+            self.current_note_id = nid
+            self.title_entry.set_text(self.notes[nid].get("title", ""))
+            self.textview.get_buffer().set_text(self.notes[nid].get("content", ""))
+
+    def on_note_selected(self, listbox, row):
+        if row: self.load_note_into_editor(row.note_id)
+
+    def save_current_note(self, widget):
+        if not self.current_note_id:
+            self.current_note_id = str(len(self.notes) + 1)
+            self.notes[self.current_note_id] = {}
+            
+        self.notes[self.current_note_id]["title"] = self.title_entry.get_text()
+        buf = self.textview.get_buffer()
+        self.notes[self.current_note_id]["content"] = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), True)
+        self.save_vault()
+        self.refresh_notes_list()
+
+    def create_new_note(self, widget):
+        self.current_note_id = str(len(self.notes) + 1)
+        self.notes[self.current_note_id] = {"title": "New Note", "content": ""}
+        self.save_vault()
+        self.refresh_notes_list()
+        self.load_note_into_editor(self.current_note_id)
+
+    def delete_current_note(self, widget):
+        if self.current_note_id and self.current_note_id in self.notes:
+            del self.notes[self.current_note_id]
+            self.save_vault()
+            self.refresh_notes_list()
+            self.current_note_id = None
+            self.title_entry.set_text("")
+            self.textview.get_buffer().set_text("")
+
+    def setup_css(self):
+        css = b'''
+            window { background-color: #030305; }
+            .hidden-header { background: #030305; min-height: 0px; padding: 0px; border: none; box-shadow: none; }
+            .sidebar { background-color: rgba(10, 12, 18, 0.98); border-right: 1px solid rgba(255, 255, 255, 0.05); }
+            .sidebar-logo { color: #FFFFFF; font-size: 20px; font-weight: 900; letter-spacing: 5px; text-shadow: 0 0 15px rgba(0, 255, 170, 0.6); }
+            .action-btn { background: linear-gradient(45deg, #00FFaa, #00b377); color: #000000; border-radius: 12px; font-weight: bold; padding: 12px; margin: 0 15px; border: none; box-shadow: 0 5px 15px rgba(0, 255, 170, 0.3); transition: all 0.3s; }
+            .action-btn:hover { box-shadow: 0 8px 25px rgba(0, 255, 170, 0.5); }
+            .section-label { color: #4A5568; font-size: 11px; font-weight: 900; letter-spacing: 2px; }
+            .transparent-list { background: transparent; }
+            .note-row { background: transparent; border-radius: 8px; margin: 2px 10px; border: 1px solid transparent; }
+            .note-row:hover { background: rgba(255, 255, 255, 0.05); cursor: pointer; }
+            .note-row:selected { background: rgba(0, 255, 170, 0.1); border-left: 3px solid #00FFaa; }
+            .note-title-lbl { color: #c9d1d9; font-weight: bold; font-size: 14px; }
+            .nav-btn { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.05); color: #8B94A5; border-radius: 10px; padding: 8px 15px; font-weight: bold; font-size: 13px; transition: all 0.2s ease; }
+            .nav-btn:hover { background: rgba(0, 255, 170, 0.1); color: #00FFaa; border: 1px solid #00FFaa; box-shadow: 0 0 15px rgba(0, 255, 170, 0.2); }
+            .workspace-bg { background: #050608; }
+            .toolbar { background: #080a0f; padding: 15px 30px; border-bottom: 1px solid rgba(255, 255, 255, 0.05); }
+            .title-entry { background: transparent; color: #FFFFFF; font-size: 24px; font-weight: bold; border: none; box-shadow: none; caret-color: #00FFaa; }
+            .title-entry:focus { border: none; box-shadow: none; }
+            .note-editor { background: transparent; color: #e6edf3; caret-color: #00FFaa; line-height: 1.6; }
+            .note-editor text { background: transparent; }
+        '''
+        provider = Gtk.CssProvider()
+        provider.load_from_data(css)
+        Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
 if __name__ == "__main__":
-    app = App()
-    app.mainloop()
+    win = ZeroNote()
+    win.connect("destroy", Gtk.main_quit)
+    win.show_all()
+    Gtk.main()
